@@ -15,6 +15,7 @@ from requests.packages.urllib3.util.retry import Retry
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 import io
+from address_normalizer import AddressNormalizer
 
 # Configure logging
 logging.basicConfig(
@@ -159,7 +160,10 @@ class DSAScraper:
                                 'PTN': '',  # Will be filled from detail page
                                 'Project Name': cells[2].get_text(strip=True),
                                 'Project Scope': '',
-                                'Project Cert Type': ''
+                                'Project Cert Type': '',
+                                'Address': '',  # Will be filled from detail page
+                                'City': '',     # Will be filled from detail page
+                                'ZIP': ''       # Will be filled from detail page
                             }
                             
                             # Get project details
@@ -167,6 +171,11 @@ class DSAScraper:
                                 basic_info, detailed_info = self.get_project_details(project['Link'])
                                 if basic_info:
                                     project.update(basic_info)
+                                    # Ensure address fields are copied from detailed_info if not in basic_info
+                                    if detailed_info:
+                                        for field in ['Address', 'City', 'ZIP']:
+                                            if field not in basic_info and field in detailed_info:
+                                                project[field] = detailed_info[field]
                                 if detailed_info:
                                     detailed_project = project.copy()
                                     detailed_project.update(detailed_info)
@@ -233,7 +242,14 @@ class DSAScraper:
             
             basic_info['Project Scope'] = scope
             detailed_info['Project Scope'] = scope
-            
+
+            # Look for ZIP code
+            zip_code = ""
+            zip_cell = soup.find('td', string=re.compile(r'Zip:', re.I))
+            if zip_cell and zip_cell.find_next('td'):
+                zip_code = zip_cell.find_next('td').get_text(strip=True)
+                detailed_info['ZIP'] = zip_code
+
             # Get certification info from the Project Certification page
             cert_type = ""
             try:
@@ -359,18 +375,19 @@ def main():
         layout="wide"
     )
     
-    st.title("DSA Project Scraper")
+    # Header section with title and description
+    st.title("🏗️ DSA Project Scraper")
+    
     st.markdown("""
-    This application scrapes project data from the DSA website and organizes it into an Excel workbook.
-    The workbook contains three sheets:
-    1. Project List - Standard format matching sample data
-    2. Financial Details - Cost information and dates for bid estimation
-    3. Technical Requirements - Compliance and technical specifications
+    ## Welcome to the DSA Project Data Tool
+    
+    This application helps you gather and organize project data from the Division of the State Architect (DSA) website. 
+    It automatically collects project information, normalizes addresses, and presents the data in an organized Excel workbook.
     """)
     
     # Sidebar controls
     with st.sidebar:
-        st.header("Settings")
+        st.header("⚙️ Settings")
         client_id = st.text_input("Client ID", value="36-67")
         
         st.subheader("Request Delay")
@@ -378,7 +395,7 @@ def main():
             "Delay between requests (seconds)",
             min_value=0.0,
             max_value=1.0,
-            value=0.0,  # Changed default to 0
+            value=0.0,
             step=0.1,
             help="Add delay between requests to avoid rate limiting (0 = no delay, 1 = 1 second delay)"
         )
@@ -386,8 +403,56 @@ def main():
         use_proxy = st.checkbox("Use Proxy")
         proxy = st.text_input("Proxy URL (optional)") if use_proxy else None
         
-    # Main content
-    if st.button("Start Scraping"):
+        st.markdown("---")
+        st.markdown("### 📝 Notes")
+        st.markdown("""
+        - The scraper respects rate limits
+        - Address normalization follows USPS standards
+        - Data is cached for better performance
+        """)
+
+        st.markdown("---")
+        st.markdown("### 📊 Output Format")
+        st.markdown("""
+        The data is organized into three comprehensive sheets:
+
+        **Project List**
+        - Basic project information
+        - Normalized addresses
+        - Project scope and certification details
+
+        **Financial Details**
+        - Cost estimates and final amounts
+        - Important project dates
+        - Location information
+
+        **Technical Requirements**
+        - Compliance specifications
+        - Safety requirements
+        - Project classifications
+        """)
+
+        st.markdown("---")
+        st.markdown("### 🚀 Getting Started")
+        st.markdown("""
+        1. Enter your Client ID (default: 36-67)
+        2. Adjust the request delay if needed
+        3. Click "Start Scraping" to begin
+        4. Download your Excel file when complete
+        """)
+
+        st.markdown("---")
+        st.markdown("### ✨ Features")
+        st.markdown("""
+        - Automatic address normalization
+        - Smart data organization
+        - Excel export with formatted columns
+        - Progress tracking
+        - Cache system for better performance
+        """)
+    
+    # Main content - Start button
+    if st.button("🚀 Start Scraping", type="primary"):
         try:
             scraper = DSAScraper(use_proxy=use_proxy, proxy=proxy, request_delay=request_delay)
             
@@ -404,12 +469,19 @@ def main():
                 # Create DataFrames
                 basic_df = pd.DataFrame(projects)
                 # Ensure columns are in the correct order to match the image exactly
-                basic_columns = ['Link', 'DSA AppId', 'PTN', 'Project Name', 'Project Scope', 'Project Cert Type']  # Updated column name
+                basic_columns = ['Link', 'DSA AppId', 'PTN', 'Project Name', 'Project Scope', 'Project Cert Type', 'Address', 'City', 'ZIP']
                 basic_df = basic_df.reindex(columns=basic_columns)
+                
+                # Create Raw Data DataFrame for address verification
+                raw_columns = [
+                    'DSA AppId', 'Project Name', 'Address', 'City', 'ZIP',
+                    'Project Type', 'Project Class', 'Received Date'
+                ]
+                raw_df = pd.DataFrame(detailed_projects).reindex(columns=raw_columns)
                 
                 # Create Financial Details DataFrame
                 financial_columns = [
-                    'DSA AppId', 'Project Name', 'PTN',  # Updated column name
+                    'DSA AppId', 'Project Name', 'PTN',
                     'Estimated Amount', 'Contracted Amount', 'Change Document Amount', 'Final Project Cost',
                     'Received Date', 'Approved Date', 'Closed Date',
                     'Project Type', 'Project Class', 'Address', 'City'
@@ -418,18 +490,106 @@ def main():
                 
                 # Create Technical Requirements DataFrame
                 technical_columns = [
-                    'DSA AppId', 'Project Name', 'Project Type', 'Project Class',  # Updated column name
+                    'DSA AppId', 'Project Name', 'Project Type', 'Project Class',
                     'Access Compliance', 'Fire & Life Safety', 'Structural Safety',
                     'Auto Fire Detection', 'Sprinkler System', 'Field Review',
                     'CGS Review', 'HPS', 'Special Type', 'Number of Increments'
                 ]
                 technical_df = pd.DataFrame(detailed_projects).reindex(columns=[col for col in technical_columns if col in pd.DataFrame(detailed_projects).columns])
                 
+                # Address Normalization
+                st.subheader("🏠 Address Normalization")
+                with st.expander("Preview Address Normalization", expanded=True):
+                    normalizer = AddressNormalizer()
+                    
+                    # Prepare addresses for batch normalization
+                    addresses_to_normalize = []
+                    for idx, row in basic_df.iterrows():
+                        if pd.notna(row['Address']) and pd.notna(row['City']):
+                            addresses_to_normalize.append({
+                                'address': row['Address'],
+                                'city': row['City'],
+                                'zip': row['ZIP'] if pd.notna(row['ZIP']) else '',
+                                'project_name': row['Project Name']
+                            })
+                    
+                    # Show progress for address normalization
+                    st.text("🔄 Normalizing addresses...")
+                    progress_bar = st.progress(0)
+                    
+                    # Perform batch normalization
+                    normalized_addresses = normalizer.normalize_batch(addresses_to_normalize)
+                    
+                    # Update the DataFrame with normalized addresses
+                    normalized_df = basic_df.copy()
+                    for idx, row in normalized_df.iterrows():
+                        if pd.notna(row['Address']) and pd.notna(row['City']):
+                            key = f"{row['Address']}, {row['City']}"
+                            if pd.notna(row['ZIP']):
+                                key += f" {row['ZIP']}"
+                            
+                            if key in normalized_addresses:
+                                normalized = normalized_addresses[key]
+                                parts = normalized.split(',')
+                                if len(parts) >= 2:
+                                    normalized_df.at[idx, 'Address'] = parts[0].strip()
+                                    city_zip = parts[1].strip().split()
+                                    if len(city_zip) >= 2:
+                                        normalized_df.at[idx, 'City'] = ' '.join(city_zip[:-1])
+                                        normalized_df.at[idx, 'ZIP'] = city_zip[-1]
+                        
+                        # Update progress
+                        progress_bar.progress((idx + 1) / len(normalized_df))
+                    
+                    # Show changes
+                    if normalized_addresses:
+                        st.write("📋 The following addresses were normalized:")
+                        changes_df = pd.DataFrame(
+                            [(orig, norm) for orig, norm in normalized_addresses.items()],
+                            columns=['Original Address', 'Normalized Address']
+                        )
+                        st.dataframe(changes_df, use_container_width=True)
+                        
+                        # Add analysis of city discrepancies
+                        city_conflicts = []
+                        for orig, norm in normalized_addresses.items():
+                            orig_parts = orig.split(',')
+                            norm_parts = norm.split(',')
+                            if len(orig_parts) > 1 and len(norm_parts) > 1:
+                                orig_city = orig_parts[1].strip()
+                                norm_city = norm_parts[1].strip().split()[0]  # Take city without ZIP
+                                if orig_city != norm_city:
+                                    city_conflicts.append({
+                                        'Address': orig_parts[0].strip(),
+                                        'Original City': orig_city,
+                                        'Normalized City': norm_city,
+                                        'ZIP': norm_parts[1].strip().split()[-1] if len(norm_parts[1].strip().split()) > 1 else 'N/A'
+                                    })
+                        
+                        if city_conflicts:
+                            st.write("⚠️ Found city name discrepancies:")
+                            conflicts_df = pd.DataFrame(city_conflicts)
+                            st.dataframe(conflicts_df, use_container_width=True)
+                        
+                        # Option to use normalized addresses
+                        if st.checkbox("Use normalized addresses in export", value=True):
+                            basic_df = normalized_df
+                    else:
+                        st.write("✅ No addresses needed normalization.")
+                    
+                    # Show cache stats
+                    cache_stats = normalizer.get_cache_stats()
+                    st.write("📊 Cache Statistics:")
+                    st.write(f"- Cached addresses: {cache_stats['size']}")
+                    st.write(f"- Cache hits: {cache_stats['hits']}")
+                    st.write(f"- Cache misses: {cache_stats['misses']}")
+                
                 # Create Excel writer object
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     # Write each DataFrame to a different worksheet
                     basic_df.to_excel(writer, sheet_name='Project List', index=False)
+                    raw_df.to_excel(writer, sheet_name='RAW DATA', index=False)
                     financial_df.to_excel(writer, sheet_name='Financial Details', index=False)
                     technical_df.to_excel(writer, sheet_name='Technical Requirements', index=False)
                     
@@ -449,19 +609,29 @@ def main():
                     worksheet = writer.sheets['Project List']
                     # Set column widths based on the image layout
                     column_widths = {
-                        'Link': 8,  # Changed from 60 to 8 to make it much shorter
+                        'Link': 8,
                         'DSA AppId': 15,
                         'PTN': 15,
                         'Project Name': 30,
                         'Project Scope': 40,
-                        'Project Cert Type': 30
+                        'Project Cert Type': 30,
+                        'Address': 35,
+                        'City': 20,
+                        'ZIP': 10
                     }
                     
                     for idx, col in enumerate(basic_columns):
                         worksheet.set_column(idx, idx, column_widths[col])
                         worksheet.write(0, idx, col, header_format)
                     
-                    # Add freeze panes to keep header visible
+                    # Format RAW DATA worksheet
+                    worksheet = writer.sheets['RAW DATA']
+                    for idx, col in enumerate(raw_df.columns):
+                        if 'Date' in col:
+                            worksheet.set_column(idx, idx, 12, date_format)
+                        else:
+                            worksheet.set_column(idx, idx, 20)
+                        worksheet.write(0, idx, col, header_format)
                     worksheet.freeze_panes(1, 0)
                     
                     # Format Financial Details worksheet
@@ -484,11 +654,11 @@ def main():
                     worksheet.freeze_panes(1, 0)
                 
                 # Display results
-                st.success(f"Successfully scraped {len(projects)} projects!")
+                st.success(f"✅ Successfully scraped {len(projects)} projects!")
                 
                 # Offer Excel download
                 st.download_button(
-                    "Download Excel Workbook",
+                    "📥 Download Excel Workbook",
                     output.getvalue(),
                     f"dsa_projects_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -496,29 +666,37 @@ def main():
                 )
                 
                 # Show preview tabs
-                tab1, tab2, tab3 = st.tabs(["Project List", "Financial Details", "Technical Requirements"])
+                tab1, tab2, tab3, tab4 = st.tabs(["📋 Project List", "📝 RAW DATA", "💰 Financial Details", "🔧 Technical Requirements"])
                 
                 with tab1:
                     st.dataframe(basic_df, use_container_width=True)
                 
                 with tab2:
-                    st.dataframe(financial_df, use_container_width=True)
+                    st.dataframe(raw_df, use_container_width=True)
                 
                 with tab3:
+                    st.dataframe(financial_df, use_container_width=True)
+                
+                with tab4:
                     st.dataframe(technical_df, use_container_width=True)
                 
                 # Show statistics
                 stats = scraper.get_stats()
-                st.subheader("Scraping Statistics")
-                st.write(f"Total Requests: {stats['total_requests']}")
-                st.write(f"Successful Requests: {stats['successful_requests']}")
-                st.write(f"Failed Requests: {stats['failed_requests']}")
-                st.write(f"Total Time: {stats['elapsed_time']}")
+                st.subheader("📊 Scraping Statistics")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Requests", stats['total_requests'])
+                with col2:
+                    st.metric("Successful Requests", stats['successful_requests'])
+                with col3:
+                    st.metric("Failed Requests", stats['failed_requests'])
+                with col4:
+                    st.metric("Total Time", str(stats['elapsed_time']))
             else:
-                st.error("No projects found. Please check the Client ID and try again.")
+                st.error("❌ No projects found. Please check the Client ID and try again.")
                 
         except Exception as e:
-            st.error(f"Error during scraping: {str(e)}")
+            st.error(f"❌ Error during scraping: {str(e)}")
             logger.error(f"Scraping error: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":

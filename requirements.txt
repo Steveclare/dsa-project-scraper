@@ -4,4 +4,9 @@ requests
 beautifulsoup4
 fake-useragent
 xlsxwriter
-lxml 
+lxml
+usaddress
+diskcache
+python-dotenv
+rapidfuzz
+usps-api 
